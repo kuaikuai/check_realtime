@@ -1,0 +1,237 @@
+/*
+  monitor the integerity of the files
+  yxf 2013/9/24
+ */
+
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <string.h>
+#include <syslog.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/limits.h>
+#include <libconfig.h++>
+#include "file_watcher.h"
+//#include "configfile.h"
+#include <string>
+
+using namespace libconfig;
+
+std::string pid_file="check_realtime.pid";
+#define OK 0
+#define ERROR -1
+
+using std::string;
+
+
+int read_proccess_name(pid_t pid, char *buff, int buff_len)
+{
+    int  count;
+    int rc = 0;
+    char temp[256];
+    FILE *proc;
+
+    buff[0] = '\0';
+    sprintf(temp, "/proc/%d/comm", pid);
+
+    if((proc = fopen(temp, "r")) == NULL) {
+        return -1;
+    }
+    if(fgets(buff, buff_len, proc) == NULL) {
+        rc = -1;
+    }
+    fclose(proc);
+    return rc;
+}
+
+int is_running(void)
+{
+    int fd;
+    int result=0;
+    pid_t pid=0;
+    char pbuf[16];
+    char buff[1024];
+
+    if((fd = open(pid_file.c_str(), O_RDONLY)) >= 0) {
+        result = read(fd,pbuf,(sizeof pbuf)-1);
+        close(fd);
+        pbuf[result] = '\x0';
+        pid = (pid_t)atoi(pbuf);
+        if( kill(pid,0) < 0) {
+            return 0;
+        }
+        read_proccess_name(pid, buff, sizeof(buff));
+        if(strstr(buff, "check_realtime") == NULL) {
+            return 0;
+        }
+        return 1;
+    }
+    else {
+        return 0;
+    }
+}
+
+/* write an optional pid file */
+int write_pid_file(void)
+{
+    int fd;
+    int result=0;
+    pid_t pid=0;
+    char pbuf[16];
+
+    if(is_running()){
+        syslog(LOG_ERR,"There's already an check_realtime server running (PID %lu).  Bailing out...",(unsigned long)pid);
+        return ERROR;
+    }
+
+    if((fd = open(pid_file.c_str(), O_WRONLY | O_CREAT,0644)) >= 0){
+        sprintf(pbuf,"%d\n",(int)getpid());
+        write(fd,pbuf,strlen(pbuf));
+        close(fd);
+    }
+    else{
+        syslog(LOG_ERR,"Cannot write to pidfile '%s' - check your privileges.",pid_file.c_str());
+    }
+
+    return OK;
+}
+
+/* remove pid file */
+int remove_pid_file(void){
+
+    if(unlink(pid_file.c_str())==-1){
+        syslog(LOG_ERR,"Cannot remove pidfile '%s' - check your privileges.",pid_file.c_str());
+        return ERROR;
+    }
+
+    return OK;
+}
+
+char *server_ip;
+char *server_port;
+char *service_name;
+char *local_ip;
+int port = 0;
+string current_path;
+
+void call(const char *name)
+{
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "echo \"%s;%s;%d;%s changed\" | %s/send_nsca -H %s -d \";\" &", 
+             local_ip, (service_name==NULL)? "syscheck" : service_name,
+             1, name, current_path.c_str(), server_ip);
+    printf("cmd: %s\n", cmd);
+    system(cmd);
+}
+
+int get_abspath(string &path)
+{
+    char buf[PATH_MAX];
+    int n = readlink("/proc/self/exe", buf, PATH_MAX);
+    if( n > 0 && n < PATH_MAX) {
+        buf[n-1] = '\0';
+        char *p = strrchr(buf, '/');
+        if(NULL != p) {
+            *p = '\0';
+        }
+        path = buf;
+        return 0;
+    }
+    buf[0]='\0';
+    return -1;
+}
+
+int main(int argc, char *argv[])
+{
+    int is_daemon = 1;
+    if(argc < 2) {
+        printf("usage: check_realtime opt\n");
+        return -1;
+    }
+
+    get_abspath(current_path);
+    pid_file = current_path+"/"+pid_file;
+
+    if(strcmp("--test", argv[1]) == 0) {
+        is_daemon = 0;
+        server_ip = strdup("127.0.0.1");
+        local_ip = strdup("127.0.0.1");
+    }
+    else if(strcmp("--stop", argv[1]) == 0) {
+        File_watcher::stop(current_path+"/check_realtime.cmd");
+        return 0;
+    }
+    else if(strcmp("--start", argv[1]) == 0) {
+        if(is_running()) {
+            printf("running...\n");
+            return 0;
+        }
+        if(argc < 4) {
+            printf("usage: check_realtime --start server_ip local_ip\n");
+            return -1;
+        }
+        server_ip = strdup(argv[2]);
+        local_ip = strdup(argv[3]);
+    }
+    if(is_daemon) {
+        daemon(0,0);
+    }
+    write_pid_file();
+    Config cfg;
+try {
+    cfg.readFile((current_path+"/realtime.cfg").c_str());
+}
+  catch(const FileIOException &fioex)
+  {
+    std::cerr << "I/O error while reading file." << std::endl;
+    return(EXIT_FAILURE);
+  }
+  catch(const ParseException &pex)
+  {
+    std::cerr << "Parse error at " << pex.getFile() << ":" << pex.getLine()
+              << " - " << pex.getError() << std::endl;
+    return(EXIT_FAILURE);
+  }
+    File_watcher* watcher = new File_watcher(current_path+"/check_realtime.cmd");
+    char *str, *token;
+
+    const Setting& root = cfg.getRoot();
+    try {
+        const Setting &checks = root["checks"];
+        int count = checks.getLength();
+        for(int i = 0; i < count; ++i) {
+            const Setting &check = checks[i];
+            string path;
+            if(!(check.lookupValue("path", path))) {
+                continue;
+            }
+            watcher->add_dir(path);
+            std::cout << "add "<< path << std::endl;
+        }
+    }
+  catch(const SettingNotFoundException &nfex)
+  {
+    // Ignore.
+  }
+#if 0
+    char *ignore = get_config_param("ignore_files");
+    if(ignore) {
+        for (str = ignore; /*none*/; str = NULL) {
+            token = strtok(str, ",");
+            if (token == NULL)
+                break;
+            watcher->ignore(token);
+        }
+    }
+#endif
+    watcher->loop(call);
+
+    remove_pid_file();
+    return 0;
+}
