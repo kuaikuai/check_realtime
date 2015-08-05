@@ -45,15 +45,15 @@
 		  }
 		);
 #使用说明
-fileuploader 的启动、停止，要以root用户来执行。
-FIM使用方法
-1.	Startup and Shutdown
-a)	 启动FIM服务：
-		首次运行：
-		/usr/local/bin/zzhelper --start
-		后续运行，启动时不扫描文件：
-		/usr/localbin/zzhelper --start --skip
-b)	停止FIM服务
-/usr/local/bin/zzhelper --stop
-2.	日志查看
-FIM日志目录是/var/log/zzhelper.log。
+		fileuploader 的启动、停止，要以root用户来执行。
+		FIM使用方法
+		1.	Startup and Shutdown
+		a)	 启动FIM服务：
+				首次运行：
+				/usr/local/bin/zzhelper --start
+				后续运行，启动时不扫描文件：
+				/usr/localbin/zzhelper --start --skip
+		b)	停止FIM服务
+		/usr/local/bin/zzhelper --stop
+		2.	日志查看
+		FIM日志目录是/var/log/zzhelper.log。
